@@ -8,7 +8,8 @@ from celery import Celery
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from src.models import Alert, StoredFile
-from src.service import STORAGE_DIR, DB_URL
+from src.crud import STORAGE_DIR
+from src.database import dsn
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ def run_in_worker_loop(coroutine):
 
 celery_app = Celery("file_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
-engine = create_async_engine(DB_URL)
+engine = create_async_engine(dsn)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
 

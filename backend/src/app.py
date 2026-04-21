@@ -2,13 +2,16 @@ from pathlib import Path
 import logging
 from typing import List
 
-from fastapi import FastAPI, HTTPException, File, Form, UploadFile
+from fastapi import FastAPI, HTTPException, File, Form, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from fastapi.security import APIKeyHeader
 from starlette import status
+from contextlib import asynccontextmanager
 
+from src.database import create_database
 from src.schemas import AlertItem, FileItem, FileUpdate
-from src.service import (
+from src.crud import (
     create_file,
     delete_file,
     get_file,
@@ -18,10 +21,31 @@ from src.service import (
     STORAGE_DIR,
 )
 from src.tasks import scan_file_for_threats
+from os import getenv
+from dotenv import load_dotenv
+
+
+load_dotenv(dotenv_path='.env.dev')
+
+ACCESS_TOKEN=getenv('ACCESS_TOKEN')
+print(f'ACCESS_TOKEN=={ACCESS_TOKEN}')
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Параметры приложения."""
+
+    await create_database()
+    yield
+
+
+app = FastAPI(
+    lifespan=lifespan,
+    title='Sputnik_test_case',
+    version='0.2.1',
+)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +58,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+api_key = APIKeyHeader(name='Authorization')
+
+
+def check_api_key(authorization: str = Depends(api_key)):
+    """Проверка ключа api для openapi"""
+
+    if not authorization or str(authorization) != ACCESS_TOKEN:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail='Unauthorized')
+    return True
 
 @app.get("/files", response_model=List[FileItem])
 async def list_files_view() -> List[FileItem]:

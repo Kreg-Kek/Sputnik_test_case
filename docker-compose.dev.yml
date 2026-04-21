@@ -28,7 +28,7 @@ services:
       - "5432:5432"
     env_file: ".env.dev"
     volumes:
-      - backend-db-volume:/var/lib/postgresql/data
+      - backend-db-volume:/var/lib/postgresql
 
   backend-redis:
     image: redis:latest

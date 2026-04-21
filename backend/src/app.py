@@ -8,8 +8,9 @@ from fastapi.responses import FileResponse, Response
 from fastapi.security import APIKeyHeader
 from starlette import status
 from contextlib import asynccontextmanager
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database import create_database
+from src.database import create_database, get_session
 from src.schemas import AlertItem, FileItem, FileUpdate
 from src.crud import (
     create_file,
@@ -59,38 +60,39 @@ app.add_middleware(
 )
 
 
-api_key = APIKeyHeader(name='Authorization')
+# api_key = APIKeyHeader(name='Authorization')
 
 
-def check_api_key(authorization: str = Depends(api_key)):
-    """Проверка ключа api для openapi"""
+# def check_api_key(authorization: str = Depends(api_key)):
+#     """Проверка ключа api для openapi"""
 
-    if not authorization or str(authorization) != ACCESS_TOKEN:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail='Unauthorized')
-    return True
+#     if not authorization or str(authorization) != ACCESS_TOKEN:
+#         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+#                             detail='Unauthorized')
+#     return True
 
 @app.get("/files", response_model=List[FileItem])
-async def list_files_view() -> List[FileItem]:
-    return await list_files()
+async def list_files_view(async_session: AsyncSession = Depends(get_session)) -> List[FileItem]:
+    return await list_files(async_session)
 
 
 @app.get("/alerts", response_model=List[AlertItem])
-async def list_alerts_view() -> List[AlertItem]:
-    return await list_alerts()
+async def list_alerts_view(async_session: AsyncSession = Depends(get_session)) -> List[AlertItem]:
+    return await list_alerts(async_session)
 
 
 @app.post("/files", response_model=FileItem, status_code=status.HTTP_201_CREATED)
 async def create_file_view(
     title: str = Form(...),
     file: UploadFile = File(...),
+    async_session: AsyncSession = Depends(get_session)
 ) -> FileItem:
     """
     Create a new file record and enqueue a background scan.
     Ensures uploaded file is properly closed on error.
     """
     try:
-        file_item = await create_file(title=title, upload_file=file)
+        file_item = await create_file(async_session, title=title, upload_file=file)
     except Exception as exc:
         try:
             await file.close()
@@ -106,9 +108,11 @@ async def create_file_view(
 
 
 @app.get("/files/{file_id}", response_model=FileItem)
-async def get_file_view(file_id: str) -> FileItem:
+async def get_file_view(file_id: str,
+                        async_session: AsyncSession = Depends(get_session)
+                        ) -> FileItem:
     try:
-        return await get_file(file_id)
+        return await get_file(async_session, file_id)
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     except Exception as exc:
@@ -117,9 +121,10 @@ async def get_file_view(file_id: str) -> FileItem:
 
 
 @app.patch("/files/{file_id}", response_model=FileItem)
-async def update_file_view(file_id: str, payload: FileUpdate) -> FileItem:
+async def update_file_view(file_id: str, payload: FileUpdate, 
+                        async_session: AsyncSession = Depends(get_session)) -> FileItem:
     try:
-        return await update_file(file_id=file_id, title=payload.title)
+        return await update_file(async_session, file_id=file_id, title=payload.title)
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     except Exception as exc:
@@ -128,9 +133,10 @@ async def update_file_view(file_id: str, payload: FileUpdate) -> FileItem:
 
 
 @app.get("/files/{file_id}/download")
-async def download_file(file_id: str):
+async def download_file(file_id: str,
+                        async_session: AsyncSession = Depends(get_session)):
     try:
-        file_item = await get_file(file_id)
+        file_item = await get_file(async_session, file_id)
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     except Exception as exc:
@@ -149,9 +155,10 @@ async def download_file(file_id: str):
 
 
 @app.delete("/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_file_view(file_id: str):
+async def delete_file_view(file_id: str,
+                            async_session: AsyncSession = Depends(get_session)):
     try:
-        await delete_file(file_id)
+        await delete_file(async_session, file_id)
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     except Exception as exc:

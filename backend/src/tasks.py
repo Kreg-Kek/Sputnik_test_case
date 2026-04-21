@@ -1,13 +1,19 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
+from typing import Optional
+
 from celery import Celery
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+
 from src.models import Alert, StoredFile
 from src.service import STORAGE_DIR, DB_URL
 
+logger = logging.getLogger(__name__)
+
 REDIS_URL = os.environ.get("REDIS_URL", "redis://backend-redis:6379/0")
-_worker_loop: asyncio.AbstractEventLoop | None = None
+_worker_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 def run_in_worker_loop(coroutine):
@@ -19,6 +25,7 @@ def run_in_worker_loop(coroutine):
 
 
 celery_app = Celery("file_tasks", broker=REDIS_URL, backend=REDIS_URL)
+
 engine = create_async_engine(DB_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -47,7 +54,10 @@ async def _scan_file_for_threats(file_id: str) -> None:
         file_item.requires_attention = bool(reasons)
         await session.commit()
 
-    extract_file_metadata.delay(file_id)
+    try:
+        extract_file_metadata.delay(file_id)
+    except Exception:
+        logger.exception("Failed to enqueue extract_file_metadata for %s", file_id)
 
 
 async def _extract_file_metadata(file_id: str) -> None:
@@ -62,7 +72,10 @@ async def _extract_file_metadata(file_id: str) -> None:
             file_item.scan_status = file_item.scan_status or "failed"
             file_item.scan_details = "stored file not found during metadata extraction"
             await session.commit()
-            send_file_alert.delay(file_id)
+            try:
+                send_file_alert.delay(file_id)
+            except Exception:
+                logger.exception("Failed to enqueue send_file_alert for %s", file_id)
             return
 
         metadata = {
@@ -71,19 +84,25 @@ async def _extract_file_metadata(file_id: str) -> None:
             "mime_type": file_item.mime_type,
         }
 
-        if file_item.mime_type.startswith("text/"):
-            content = stored_path.read_text(encoding="utf-8", errors="ignore")
-            metadata["line_count"] = len(content.splitlines())
-            metadata["char_count"] = len(content)
-        elif file_item.mime_type == "application/pdf":
-            content = stored_path.read_bytes()
-            metadata["approx_page_count"] = max(content.count(b"/Type /Page"), 1)
+        try:
+            if file_item.mime_type.startswith("text/"):
+                content = stored_path.read_text(encoding="utf-8", errors="ignore")
+                metadata["line_count"] = len(content.splitlines())
+                metadata["char_count"] = len(content)
+            elif file_item.mime_type == "application/pdf":
+                content = stored_path.read_bytes()
+                metadata["approx_page_count"] = max(content.count(b"/Type /Page"), 1)
+        except Exception:
+            logger.exception("Failed to extract file content for metadata: %s", stored_path)
 
         file_item.metadata_json = metadata
         file_item.processing_status = "processed"
         await session.commit()
 
-    send_file_alert.delay(file_id)
+    try:
+        send_file_alert.delay(file_id)
+    except Exception:
+        logger.exception("Failed to enqueue send_file_alert for %s", file_id)
 
 
 async def _send_file_alert(file_id: str) -> None:
@@ -109,14 +128,23 @@ async def _send_file_alert(file_id: str) -> None:
 
 @celery_app.task
 def scan_file_for_threats(file_id: str) -> None:
-    run_in_worker_loop(_scan_file_for_threats(file_id))
+    try:
+        run_in_worker_loop(_scan_file_for_threats(file_id))
+    except Exception:
+        logger.exception("Error running scan_file_for_threats for %s", file_id)
 
 
 @celery_app.task
 def extract_file_metadata(file_id: str) -> None:
-    run_in_worker_loop(_extract_file_metadata(file_id))
+    try:
+        run_in_worker_loop(_extract_file_metadata(file_id))
+    except Exception:
+        logger.exception("Error running extract_file_metadata for %s", file_id)
 
 
 @celery_app.task
 def send_file_alert(file_id: str) -> None:
-    run_in_worker_loop(_send_file_alert(file_id))
+    try:
+        run_in_worker_loop(_send_file_alert(file_id))
+    except Exception:
+        logger.exception("Error running send_file_alert for %s", file_id)

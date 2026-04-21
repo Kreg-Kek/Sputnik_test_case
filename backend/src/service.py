@@ -1,6 +1,8 @@
+import logging
 import mimetypes
 import os
 from pathlib import Path
+from typing import List, Tuple
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
@@ -9,26 +11,28 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from src.models import Alert, StoredFile
 
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STORAGE_DIR = BASE_DIR / "storage" / "files"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
 DB_URL = (
-    f"postgresql+asyncpg://{os.environ.get('POSTGRES_USER')}:"
-    f"{os.environ.get('POSTGRES_PASSWORD')}@{os.environ.get('POSTGRES_HOST')}:"
-    f"{os.environ.get('PGPORT')}/{os.environ.get('POSTGRES_DB')}"
+    f"postgresql+asyncpg://{os.getenv('POSTGRES_USER','')}:"
+    f"{os.getenv('POSTGRES_PASSWORD','')}@{os.getenv('POSTGRES_HOST','localhost')}:"
+    f"{os.getenv('PGPORT', int(os.getenv('POSTGRES_PORT', '5432')))}/{os.getenv('POSTGRES_DB','')}"
 )
-engine = create_async_engine(DB_URL)
+engine = create_async_engine(DB_URL, echo=False, future=True)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
 
-async def list_files() -> list[StoredFile]:
+async def list_files() -> List[StoredFile]:
     async with async_session_maker() as session:
         result = await session.execute(select(StoredFile).order_by(StoredFile.created_at.desc()))
         return list(result.scalars().all())
 
 
-async def list_alerts() -> list[Alert]:
+async def list_alerts() -> List[Alert]:
     async with async_session_maker() as session:
         result = await session.execute(select(Alert).order_by(Alert.created_at.desc()))
         return list(result.scalars().all())
@@ -42,30 +46,58 @@ async def get_file(file_id: str) -> StoredFile:
         return file_item
 
 
-async def create_file(title: str, upload_file: UploadFile) -> StoredFile:
-    content = await upload_file.read()
-    if not content:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
+def _secure_filename(name: str) -> str:
+    return Path(name).name or ""
 
+
+async def create_file(title: str, upload_file: UploadFile) -> StoredFile:
     file_id = str(uuid4())
     suffix = Path(upload_file.filename or "").suffix
     stored_name = f"{file_id}{suffix}"
     stored_path = STORAGE_DIR / stored_name
-    stored_path.write_bytes(content)
+
+    total_size = 0
+    try:
+        original_name = _secure_filename(upload_file.filename or stored_name)
+
+        with stored_path.open("wb") as f:
+            while True:
+                chunk = await upload_file.read(1024 * 64)  # 64KB
+                if not chunk:
+                    break
+                f.write(chunk)
+                total_size += len(chunk)
+    finally:
+        try:
+            await upload_file.close()
+        except Exception:
+            logger.debug("Failed to close UploadFile for %s", file_id, exc_info=True)
+
+    if total_size == 0:
+        if stored_path.exists():
+            try:
+                stored_path.unlink()
+            except Exception:
+                logger.debug("Failed to remove empty stored file %s", stored_path, exc_info=True)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
+
+    mime_type = upload_file.content_type or mimetypes.guess_type(stored_name)[0] or "application/octet-stream"
 
     file_item = StoredFile(
         id=file_id,
         title=title,
-        original_name=upload_file.filename or stored_name,
+        original_name=original_name,
         stored_name=stored_name,
-        mime_type=upload_file.content_type or mimetypes.guess_type(stored_name)[0] or "application/octet-stream",
-        size=len(content),
+        mime_type=mime_type,
+        size=total_size,
         processing_status="uploaded",
     )
+
     async with async_session_maker() as session:
         session.add(file_item)
         await session.commit()
         await session.refresh(file_item)
+
     return file_item
 
 
@@ -87,12 +119,15 @@ async def delete_file(file_id: str) -> None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
         stored_path = STORAGE_DIR / file_item.stored_name
         if stored_path.exists():
-            stored_path.unlink()
+            try:
+                stored_path.unlink()
+            except Exception:
+                logger.exception("Failed to remove stored file %s", stored_path)
         await session.delete(file_item)
         await session.commit()
 
 
-async def get_file_path(file_id: str) -> tuple[StoredFile, Path]:
+async def get_file_path(file_id: str) -> Tuple[StoredFile, Path]:
     file_item = await get_file(file_id)
     stored_path = STORAGE_DIR / file_item.stored_name
     if not stored_path.exists():

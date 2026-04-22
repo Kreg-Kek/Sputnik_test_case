@@ -80,6 +80,10 @@ async def create_file(async_session: AsyncSession, title: str, upload_file: Uplo
         mime_type=mime_type,
         size=total_size,
         processing_status="uploaded",
+        scan_status=None,
+        scan_details=None,
+        metadata_json=None,
+        requires_attention=False,
     )
 
     async_session.add(file_item)
@@ -113,8 +117,8 @@ async def delete_file(async_session: AsyncSession, file_id: str) -> None:
     await async_session.commit()
 
 
-async def get_file_path(file_id: str) -> Tuple[StoredFile, Path]:
-    file_item = await get_file(file_id)
+async def get_file_path(async_session: AsyncSession, file_id: str) -> Tuple[StoredFile, Path]:
+    file_item = await get_file(async_session, file_id)
     stored_path = STORAGE_DIR / file_item.stored_name
     if not stored_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stored file not found")
@@ -127,3 +131,4 @@ async def create_alert(async_session: AsyncSession, file_id: str, level: str, me
     await async_session.commit()
     await async_session.refresh(alert)
     return alert
+

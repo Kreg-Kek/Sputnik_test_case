@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import React, { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Badge,
@@ -38,6 +38,7 @@ type AlertItem = {
   created_at: string;
 };
 
+const API_BASE = "http://localhost:8000";
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("ru-RU", {
@@ -96,19 +97,24 @@ export default function Page() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  async function loadData() {
+  const safeFetch = useCallback(async (input: RequestInfo, init?: RequestInit) => {
+    const res = await fetch(input, { cache: "no-store", ...init });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(text || "Сервер вернул ошибку");
+    }
+    return res;
+  }, []);
+
+  const loadData = useCallback(async () => {
     setIsLoading(true);
     setErrorMessage(null);
 
     try {
       const [filesResponse, alertsResponse] = await Promise.all([
-        fetch(`http://localhost:8000/files`, { cache: "no-store" }),
-        fetch(`http://localhost:8000/alerts`, { cache: "no-store" }),
+        safeFetch(`${API_BASE}/files`),
+        safeFetch(`${API_BASE}/alerts`),
       ]);
-
-      if (!filesResponse.ok || !alertsResponse.ok) {
-        throw new Error("Не удалось загрузить данные");
-      }
 
       const [filesData, alertsData] = await Promise.all([
         filesResponse.json() as Promise<FileItem[]>,
@@ -122,47 +128,46 @@ export default function Page() {
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [safeFetch]);
 
   useEffect(() => {
     void loadData();
-  }, []);
+  }, [loadData]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const handleSubmit = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
 
-    if (!title.trim() || !selectedFile) {
-      setErrorMessage("Укажите название и выберите файл");
-      return;
-    }
-
-    setIsSubmitting(true);
-    setErrorMessage(null);
-
-    const formData = new FormData();
-    formData.append("title", title.trim());
-    formData.append("file", selectedFile);
-
-    try {
-      const response = await fetch(`http://localhost:8000/files`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error("Не удалось загрузить файл");
+      if (!title.trim() || !selectedFile) {
+        setErrorMessage("Укажите название и выберите файл");
+        return;
       }
 
-      setShowModal(false);
-      setTitle("");
-      setSelectedFile(null);
-      await loadData();
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Произошла ошибка");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
+      setIsSubmitting(true);
+      setErrorMessage(null);
+
+      const formData = new FormData();
+      formData.append("title", title.trim());
+      formData.append("file", selectedFile);
+
+      try {
+        await safeFetch(`${API_BASE}/files`, {
+          method: "POST",
+          body: formData,
+        });
+
+        setShowModal(false);
+        setTitle("");
+        setSelectedFile(null);
+        await loadData();
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "Произошла ошибка");
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [title, selectedFile, safeFetch, loadData]
+  );
 
   return (
     <Container fluid className="py-4 px-4 bg-light min-vh-100">
@@ -258,7 +263,7 @@ export default function Page() {
                             <td className="text-nowrap">
                               <Button
                                 as="a"
-                                href={`http://localhost:8000/files/${file.id}/download`}
+                                href={`${API_BASE}/files/${file.id}/download`}
                                 variant="outline-primary"
                                 size="sm"
                               >

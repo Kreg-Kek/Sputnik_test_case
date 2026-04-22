@@ -29,7 +29,6 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path='.env.dev')
 
 ACCESS_TOKEN=getenv('ACCESS_TOKEN')
-print(f'ACCESS_TOKEN=={ACCESS_TOKEN}')
 
 logger = logging.getLogger(__name__)
 

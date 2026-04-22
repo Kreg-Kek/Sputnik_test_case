@@ -18,8 +18,6 @@ dsn = (
     f"{os.getenv('PGPORT', int(os.getenv('POSTGRES_PORT', '5432')))}/{os.getenv('POSTGRES_DB','')}"
 )
 
-print(f'проверка db_url:{dsn}')
-
 engine = create_async_engine(dsn, echo=False, future=True, pool_size=100)
 
 async_session = sessionmaker(
